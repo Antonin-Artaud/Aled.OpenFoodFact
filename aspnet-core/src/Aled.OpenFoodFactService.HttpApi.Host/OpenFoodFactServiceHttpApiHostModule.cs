@@ -4,8 +4,11 @@ using System.IO;
 using System.Linq;
 using System.Security.Claims;
 using System.Text;
+using System.Threading.Tasks;
+using Aled.OpenFoodFactService.BackgroundServices;
 using Aled.OpenFoodFactService.MongoDb;
 using Aled.OpenFoodFactService.MultiTenancy;
+using Hangfire;
 using Medallion.Threading;
 using Medallion.Threading.Redis;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -20,10 +23,12 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using StackExchange.Redis;
 using Volo.Abp;
+using Volo.Abp.AspNetCore.Auditing;
 using Volo.Abp.AspNetCore.Mvc;
 using Volo.Abp.AspNetCore.Mvc.UI.MultiTenancy;
 using Volo.Abp.AspNetCore.Serilog;
 using Volo.Abp.Autofac;
+using Volo.Abp.BackgroundJobs.Hangfire;
 using Volo.Abp.Caching;
 using Volo.Abp.Caching.StackExchangeRedis;
 using Volo.Abp.DistributedLocking;
@@ -43,7 +48,8 @@ namespace Aled.OpenFoodFactService;
     typeof(OpenFoodFactServiceApplicationModule),
     typeof(OpenFoodFactServiceMongoDbModule),
     typeof(AbpAspNetCoreSerilogModule),
-    typeof(AbpSwashbuckleModule)
+    typeof(AbpSwashbuckleModule),
+    typeof(AbpBackgroundJobsHangfireModule)
 )]
 public class OpenFoodFactServiceHttpApiHostModule : AbpModule
 {
@@ -61,6 +67,24 @@ public class OpenFoodFactServiceHttpApiHostModule : AbpModule
         ConfigureCors(context, configuration);
         ConfigureSwaggerServices(context, configuration);
         ConfigureHealthChecks(context);
+        ConfigureHangfire(context, configuration);
+        ConfigureHangfireAuditing();
+    }
+
+    private void ConfigureHangfireAuditing()
+    {
+        Configure<AbpAspNetCoreAuditingOptions>(options =>
+        {
+            options.IgnoredUrls.Add("/hangfire/stats");
+        });
+    }
+    
+    private void ConfigureHangfire(ServiceConfigurationContext context, IConfiguration configuration)
+    {
+        context.Services.AddHangfire(config =>
+        {
+            config.UseSqlServerStorage(configuration.GetConnectionString("Hangfire"));
+        });
     }
 
     private void ConfigureHealthChecks(ServiceConfigurationContext context)
@@ -221,6 +245,17 @@ public class OpenFoodFactServiceHttpApiHostModule : AbpModule
         app.UseHealthChecks("/health");
         app.UseAuditing();
         app.UseAbpSerilogEnrichers();
+        app.UseHangfireDashboard();
         app.UseConfiguredEndpoints();
+        
+        InitializeRecurringJobs();
+    }
+    
+    private static void InitializeRecurringJobs()
+    {
+        RecurringJob.AddOrUpdate<IUpdatingDatabaseManager>(
+            "Updating OpenFoodFact data",
+            manager => manager.UpdateDatabaseAsync(DateTime.Now),
+            Cron.Daily);
     }
 }
